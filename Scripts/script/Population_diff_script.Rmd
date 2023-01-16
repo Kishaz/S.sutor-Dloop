@@ -1,0 +1,307 @@
+---
+title: "S.sutor population differentiation"
+output: html_notebook
+
+---
+
+## Packages
+
+```{r pkg, include=FALSE}
+library("apex")
+library("adegenet")
+library("pegas")
+library("mmod")
+library("poppr")
+
+```
+
+
+##Introduction
+1) quantify pairwise subpopulation structure and their significance, 2) test for hierarchical structure among groups of subpopulations, and 3) use population clustering algorithms to corroborate the a priori grouping hypothesis.
+
+
+## Importing da6ta
+We will first import FASTA files for all genes at once using the apex function read.multiFASTA(). This will allow us to read in multiple FASTA formatted files at once into a “multiDNA” object from the apex package. We can plot it to see what the genes look like for all of our samples
+```{r multiFASTA}
+# Creating DNAbin objects
+dlpdata <- read.multiFASTA("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/data/S.sutor_dloop.fas", add.gaps = TRUE)# use MEGA aligned msa
+plot(dlpdata, cex = 0.2)
+```
+
+```{r}
+svg("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/figures/msa_plot.svg", width = 11, height = 9)#save as svg file
+plot(dlpdata, cex = 0.2)
+```
+ 
+Now we can create our “genind” object.
+
+```{r genid obj}
+# Creating genind object by multilocus sequence types
+dlp.gid <- multidna2genind(dlpdata)
+dlp.gid
+```
+
+We also want to set the population strata.
+
+```{r strata}
+my_strata <- data.frame(regions = c(rep("NC", 114), rep("SC", 103)), 
+                        populations =  c(rep("Kiunga", 13),rep("Lamu",13), rep( "Mayungu", 21), rep("Bofa", 24),rep("Mnarani",14), rep("Takaungu", 29),rep("Gazi", 59), rep("Msambweni", 16),  rep("Shimoni", 15), rep("Vanga", 13))) # the populations should be organized in groups hierarchically. 
+strata(dlp.gid) <- my_strata
+setPop(dlp.gid) <- ~populations
+dlp.gid
+```
+
+##Pairwise population differentiation
+
+Overall F-statistics
+
+```{r stats1}
+diff_stats(dlp.gid) # this function calculates overall Nei's Gst, Hedrick's Gst and  of the dataset
+```
+
+
+```{r stats2}
+Phi_st_Meirmans(dlp.gid) # this function calculates overall PhiST, the Fst analog for DNA sequence data
+```
+
+####Pairwise Fst
+
+```{r FSt1}
+pairwise_Gst_Nei(dlp.gid, linearized = FALSE) # Calculates pairwise Gst. If linearized = TRUE, it calculates 1/(1- Gst)  
+```
+
+```{r Fst2}
+pairwise_Gst_Hedrick(dlp.gid, linearized = FALSE)# Calculates pairwise Gst. If linearized = TRUE, it calculates 1/(1- Gst')  
+```
+
+```{r Fst3}
+pairwise_D(dlp.gid, linearized = FALSE, hsht_mean = "arithmetic") # Calculates pairwise Gst. If linearized = TRUE, it calculates 1/(1- D)  
+```
+
+Pairwise PhiST between populations
+
+```{r}
+d<- dist(dlp.gid)
+hdist<-hclust(d, method = "ward.D")
+populations =  c(rep("Kiunga", 13),rep("Lamu",13), rep( "Mayungu", 21), rep("Bofa", 24),rep("Mnarani",14), rep("Takaungu", 29),rep("Gazi", 59), rep("Msambweni", 16),  rep("Shimoni", 15), rep("Vanga", 13))
+phist<-pairPhiST(d,  populations, nperm=999, subset=NULL, negatives=T)
+write.table(phist,file="phist.txt", quote=FALSE, sep="\t") 
+```
+
+## Testing Significance
+To estimate if populations are significantly different, we will generate 100 replicates of the dataset using the function chao_bootstrap(). Then, summary statistics (mean and 95% CI) will be calculated for each of the different parameters of population differentiation.
+```{r stats5}
+bs <- chao_bootstrap(dlp.gid, nreps = 100)
+summarise_bootstrap(bs, D_Jost)    # for D-Jost
+```
+
+
+
+## AMOVA (Analysis of Molecular Variance)
+Analysis of Molecular Variance (AMOVA) is a method for estimating population differentiation from molecular data taking into account the mutational distance between alleles. Unlike Fst, which quantifies genetic differentiation based on allele frequencies, AMOVA treats molecular data as vectors and estimates Euclidean distances between alleles. Furthermore, it is possible to test hypotheses about differentiation by grouping subpopulations in a hierarchical structure (Excoffier et al., 1992).
+
+```{r amova}
+dlp_dist <- dist.multidna(dlpdata, pool = T)
+AMV<-amova(dlp_dist ~ populations, data = strata(dlp.gid), nperm = 1000)
+AMV
+```
+## Clustering
+cross validation
+```{r crossV}
+set.seed(999)
+dlp.gidX <- xvalDapc(tab(dlp.gid, NA.method = "mean"), pop(dlp.gid))
+```
+
+We can see that we have a peak around 25 PC. From here, we can narrow the search by specifying the number of PC to try with n.pca and centering it around 25, and doing 1000 replicates each (Note, this will take a long time).
+
+```{r crossV_range}
+set.seed(999)
+dlp.gidX <- xvalDapc(tab(dlp.gid, NA.method = "mean"), pop(dlp.gid),
+                             n.pca = 25:30, n.rep = 1000,
+                             parallel = "multicore", ncpus = 4L)
+
+```
+We can see that it’s basically a flat line all the way. If we take a look at the object, we see that 27 PCs give us the highest percent of correctly predicted subsamples with the lowest error.
+
+```{r}
+svg("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/figures/DAPC_crossV.svg", width = 11, height = 9)#save as svg file
+dlp.gidX <- xvalDapc(tab(dlp.gid, NA.method = "mean"), pop(dlp.gid),
+                             n.pca = 25:30, n.rep = 1000,
+                             parallel = "multicore", ncpus = 4L)
+```
+
+Inspect the cross validation output
+```{r}
+names(dlp.gidX)
+```
+
+```{r}
+dlp.gidX[-1]
+```
+
+
+##Unsupervised clustering
+We don’t know the populations and we are looking for. As recommended by T. Jombart, with the function find.clusters() we used the maximum possible number of PCA axis which is 27 here. See detailed tutorial on this method for more information (https://github.com/thibautjombart/adegenet/raw/master/tutorials /tutorial-basics.pdf) In this example, we used choose.n.clust = FALSE but it is nice to use the option TRUE and then you will be able to choose the number of clusters.
+
+```{r}
+set.seed(20220906) # Setting a seed for a consistent result
+grp <- find.clusters(dlp.gid, max.n.clust = 12, n.pca = 27, choose.n.clust = FALSE) 
+names(grp)
+```
+
+```{r}
+grp$grp
+```
+
+The K means procedure detected 6 groups. We will use this number of group in the discriminant analysis (function dapc()). On your own dataset, you need to spend more time to estimate the number of clusters.
+
+```{r}
+dapc1 <- dapc(dlp.gid, grp$grp, n.pca = 27, n.da = 6, scale = TRUE) 
+scatter(dapc1, leg = T, posi.da="bottomleft", pch=17:22,solid= 1, scree.pca=TRUE, posi.pca="topleft",inset.da=0.01, inset.pca=0.01, bg="white", ratio.da= 0.20, ratio.pca = 0.20, cleg = 1, label = NULL, inset.solid= 0.8, posi.leg = "topright", txt.leg=paste("Cluster",1:6))
+```
+
+```{r}
+
+svg("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/figures/unsupervised_DAPC.svg", width = 11, height = 9)#save as svg file
+scatter(dapc1, leg = T, posi.da="bottomleft", pch=17:22,solid= 1, scree.pca=TRUE, posi.pca="topleft",inset.da=0.01, inset.pca=0.01, bg="white", ratio.da= 0.20, ratio.pca = 0.20, cleg = 1, label = NULL, inset.solid= 0.8, posi.leg = "topright", txt.leg=paste("Cluster",1:6))
+```
+
+
+## Supervised clustering
+
+```{r}
+set.seed(101)
+setPop(dlp.gid) <- ~regions/populations
+dlp_dapc <- dapc(dlp.gid, scale = T)
+scatter(dlp_dapc, leg = T, posi.da="bottomleft", pch=17:22,solid= 1, scree.pca=TRUE, posi.pca="topleft",inset.da=0.01, inset.pca=0.01, bg="white", ratio.da= 0.20, ratio.pca = 0.20, cleg = 1, label = NULL, inset.solid= 0.8, posi.leg = "topright")
+```
+NC = North Coast, SC = South Coast
+We can see that there is differentiation based on geography, and that North coast populations are different from the South coast.
+```{r}
+
+svg("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/figures/supervised_DAPC.svg", width = 11, height = 9)#save as svg file
+scatter(dlp_dapc, leg = T, posi.da="bottomleft", pch=17:22,solid= 1, scree.pca=TRUE, posi.pca="topleft",inset.da=0.01, inset.pca=0.01, bg="white", ratio.da= 0.20, ratio.pca = 0.20, cleg = 1, label = NULL, inset.solid= 0.8, posi.leg = "topright")
+```
+
+
+```{r}
+compoplot(dlp_dapc,  lab = rownames(dlp_dapc), border = NA)
+```
+
+```{r}
+
+svg("~/Desktop/S-sutor/R_analysis/sutor_population_genetics/figures/compoplot.svg", width = 11, height = 9)#save as svg file
+compoplot(dlp_dapc, lab="")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
